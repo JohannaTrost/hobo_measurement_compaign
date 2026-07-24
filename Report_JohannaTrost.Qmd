@@ -1,0 +1,1881 @@
+---
+title: 'Report 2: Hobo measurement compaign'
+subtitle: 'Environmental Monitoring, Data Analysis and Visualization'
+author: "Johanna Trost"
+date: "03.31.2024"
+format:
+  html:
+    df-print: paged
+    self-contained: true
+  pdf:
+    df-print: kable
+    lof: true
+    lot: true
+execute:
+  echo: true
+  warning: false 
+  #eval: false # remove this if code cells are working
+toc: true
+toc-depth: 3
+code-block-bg: "#E9E9E9"
+code-block-border-left: "#D9D9D9"
+---
+
+# Setup
+
+```{r}
+#| label: setup
+#| include: false
+# Install necessary packages if not yet installed
+cran <- "http://cran.us.r-project.org"
+if(!require("DBI")) install.packages("DBI", repos = cran)
+if(!require("duckdb")) install.packages("duckdb", repos = cran)
+if(!require("tidyverse")) install.packages("tidyverse", repos = cran)
+if(!require("readr")) install.packages("readr", repos = cran)
+if(!require("zoo")) install.packages("zoo", repos = cran)
+if(!require("ggplot2")) install.packages("ggplot2", repos = cran)
+if(!require("lubridate")) install.packages("lubridate", repos = cran)
+if(!require("ggpubr")) install.packages("ggpubr", repos = cran)
+if(!require("plotly")) install.packages("plotly", repos = cran)
+if(!require("sf")) install.packages("sf", repos = cran)
+if(!require("viridis")) install.packages("viridis", repos = cran)
+if(!require("caret")) install.packages("caret", repos = cran)
+```
+
+## Loaded packages
+
+```{r message = FALSE, warning = FALSE, output = FALSE}
+#| label: libraries
+# Load all packages here
+library(DBI)
+library(duckdb)
+library(tidyverse)
+library(readr)
+library(zoo)
+library(ggplot2)
+library(lubridate)
+library(ggpubr)
+library(plotly)
+library(sf)
+library(viridis)
+library(caret) # For CV
+```
+
+## Preprocessing / R functions {#prepro}
+
+The following pre-processing steps are performed in bash and are required in order to load the raw data into a database [in this section](#loadraw) without errors.
+
+### For Windows
+
+If your operating system is Windows the below bash cells are not expected to work. In this case, please set the eval option to FALSE (i.e., `{bash eval = FALSE}`) in the pre-processing sections ([here](#load), [here](#prepro5.4) and [here](#prepro6.5)), as well as in [this section](#verify). Ideally, the bash scripts, *scripts/load_gitdata.sh*, *scripts/prepro_raw.sh* and *scripts/prepro_hourly.sh*, can be executed in a different way. If you cannot execute bash scripts, please decompress the tar-archives that contain the pre-processed data, as follows:
+
+1.  Open a terminal (Press Win + R, type cmd, and press Enter).
+2.  Navigate to the project directory (`cd path\to\Report_JohannaTrost`).
+3.  Execute the following two commands:
+    1.  `tar -xzvf data/input/GIS.tar.gz`
+    2.  `tar -xzvf data/input/hobo.tar.gz`
+
+### For macOS or Linux {#load}
+
+The bash script that is executed below loads the necessary data from Github into the directory *data/input*.
+
+```{bash eval = TRUE}
+# Download necessary data from github
+bash scripts/load_gitdata.sh
+```
+
+#### Pre-processing of raw files for 5.4 {#prepro5.4}
+
+Here, all raw data files available in *data/input/hobo/\<year\>/raw* are pre-processed to then be used in section 5.4. At the end of pre-processing all Hobo files will be comma separated value (csv) files with one column for timestamps, one for temperature measurements and another column for light measurements. The remaining files that do not match the Hobo filename pattern, i.e. eight numbers followed by the file extension, are shown below. The correctly named files of "10350067_2017.csv" and "10347346.tsv" already exist in the respective directories and are thus not renamed. The remaining files will be excluded as they do not contain Hobo measurements.
+
+```{bash eval = TRUE, error = FALSE, message = FALSE, warning = FALSE}
+#| label: prepro-raw
+#| message: false
+#| warning: false
+bash scripts/prepro_raw.sh
+```
+
+#### Pre-processing of QC files for 6.5 {#prepro6.5}
+
+The bash script from the above section can also be used for the quality-checked hourly data with minimal adaptations for instance, regarding the directory and file names.
+
+```{bash eval = TRUE, error = FALSE, message = FALSE, warning = FALSE}
+#| label: prepro-wc
+bash scripts/prepro_hourly.sh
+```
+
+# 1. Hobo meta information
+
+The Hobo measuring device was installed on the terrace in the student housing residency in Seepark (48°00'26.6"N, 7°49'12.4"E). It was mounted between the planks of the backrest of a pallet seat (see @fig-Hobo-image) facing the South and about 110 cm above the ground.\
+Fully protected from sunlight due to the planks of the backrest, the surrounding walls of the building, as well as the building on the opposite side, the Hobo device's location also had drawbacks. First, it was situated about 120cm from the door to the terrace, so opening it could temporarily raise the temperature (given that the outside temperature is cooler than the inside temperature). Second, the Hobo device was mounted only a few Centimeters away from the window, so that the radiated heat from the building probably causes the measured temperature to be constantly slightly higher than the air temperature several meters away from the building. Of note, this window cannot be opened. Further, this bias is expected to be low, as the building was built between 2015 and 2016 and is a KfW Efficiency House 55 with thermal bridge optimization, i.e., for example, the transmission heat loss is only 70 % of the average reference building and the structural thermal insulation is therefore 30 % better (see [information about the building](https://www.econzept.de/neubau-studentensiedlung-am-seepark-freiburg/) and about the [efficiency class](https://www.kfw.de/inlandsfoerderung/Privatpersonen/Bestehende-Immobilie/Energieeffizient-sanieren/Das-Effizienzhaus/)).\
+Despite these drawbacks, the best available spot for the Hobo device was chosen, as no other location on the terrace would have provided such a good protection from sunlight.
+
+![Location of the Hobo device on the terrace at Seepark. The upper photos show that the device is protected from sunlight by the surrounding walls and the building facing the terrace. The zoomed-in views show how the device is mounted between the planks of the backrest of the pallet seat.](./data/input/Hobo_picture.png){#fig-Hobo-image width="60%"}
+
+# 2. Consistent HOBO data file
+
+Here, I load my HOBO data with the columns: id, dttm, temp and Lux. In addition, the time stamp column is formatted.
+
+```{r}
+#| label: raw_data
+data_path_2024 <- file.path("https://raw.githubusercontent.com",
+                            "data-hydenv", 
+                            "data", 
+                            "master", 
+                            "hobo", 
+                            "2024") 
+# Load raw data of my HOBO
+data <- read.csv(file.path(data_path_2024, "raw", "10350006.csv"), 
+                 skip = 2, 
+                 header = FALSE)
+
+# Get necessary columns with correct types and names
+colnames(data) <- list("id", "dttm", "temp", "lux") # Set correct colnames
+data <- data %>% 
+    select("id", "dttm", "temp", "lux") %>% # Select necessary columns
+    as_tibble() %>%
+    mutate(dttm = parse_date_time(dttm, 
+                                  '%m/%d/%y %I:%M:%S %p', 
+                                  tz='CET')
+           ) # Get date from string
+```
+
+## 2.1. Calibration
+
+```{r}
+#| label: calibration
+# Load calibration information
+t_cal <- read.csv(file.path(data_path_2024, "calibration.csv"), skip = 3)
+
+# Get temperature at exact same time from my Hobo 
+t_cal_hobo <- data %>% 
+  filter(dttm == with_tz(ymd_hm(t_cal$dttm), tz = "CET"))
+
+# Calibrate temperature measurements 
+offset <- t_cal$T - t_cal_hobo$temp
+data$temp <- data$temp + offset
+
+# Show offset 
+cat("Offset: ", offset)
+```
+
+## 2.2. Create HOBO data file
+
+```{r}
+# All dates - start at 23.10.2023 at 00:00 and ends on the 7.1.2024 at 23:50
+full_ts <- seq(ymd_hms('2023-10-23 00:00:00', tz = "CET"), 
+               ymd_hms('2024-01-07 23:50:00', tz = "CET"),
+               by = '10 mins') %>%
+    as_tibble() %>% 
+    # To handle daylight saving time: first convert to string
+    mutate(dttm = format(value, "%Y-%m-%d %H:%M")) %>% 
+    distinct(dttm) # then remove duplicates
+
+# Format table
+data <- data %>% 
+  mutate(dttm = format(dttm, "%Y-%m-%d %H:%M")) %>% # correct date format
+  right_join(., full_ts, by = "dttm") %>% # fill up missing with NA and crop
+  mutate(temp = sprintf("%.3f", 
+                        round(temp, 3)), # add trailing zeros, 3 digits
+         lux = sprintf("%.3f", 
+                       round(lux, 3)), # add training zeros, 3 digits
+         id = seq(1, n()))  
+
+# Save table for upload
+write_csv(data, file.path("data", "output", "10350006.csv"))
+```
+
+## 2.3. Verify your file {#verify}
+
+The file format can be verified by printing the head of the file in bash.
+
+```{bash eval = TRUE}
+# Verify formatted file
+head data/output/10350006.csv
+```
+
+Otherwise, it can only be verified from the tibble table in R, as loading the table from the file in R would already alter the column format.
+
+```{r eval = FALSE, include = FALSE}
+#| label: tbl-hobo-file
+#| tbl-cap: "Raw Hobo data in correct format. It includes the row ID (id), timestamp (dttm), temperature in °C (temp) and light in lux (lux)."
+head(data)
+```
+
+Furthermore, we can check that the time stamp column is complete:
+
+```{r}
+cat(any(is.na(data$dttm)))
+```
+
+In addition, the file contains the correct number of observations (i.e., 11,088 rows):
+
+```{r}
+cat(dim(data)[1])
+```
+
+# 3. Quality control
+
+Here, the raw Hobo measurements are loaded from the uploaded Github file, while again verifying the dimensions of the table.
+
+```{r message = FALSE}
+#| label: formated_data
+# Load data from Github
+data <- read_csv(file.path(data_path_2024, "10_minutes", "10350006.csv"))
+
+# Convert the 'dttm' column to UTC+1, without messing up 
+data$dttm <- with_tz(data$dttm, tz="Etc/GMT-1") - 60 * 60
+
+cat(dim(data)) # Check dimensions
+```
+
+## 3.1. First impression
+
+At first glance, the measurements of temperature and light seem plausible. The light or illuminance fluctuates between 0 Lux and about 1300 Lux (see @fig-first-impression (b)) indicating that no sunlight hit the Hobo device. They also follow a daily pattern, being near 0 Lux during the night. The temperature seems to have declined slightly from around the end of October 2023 until the beginning of December 2023 (see @fig-first-impression (a)). Here, we also observe fluctuations, but neither extreme outliers nor very little temperature variations.
+
+```{r}
+#| label: fig-first-impression
+#| fig-cap: |
+#|   First impression of the raw data from the Hobo measurements.
+#| layout-nrow: 2
+#| fig-subcap: 
+#|   - "Temperature (°C) measured by the Hobo device at the Seepark residency between the 23rd of October 2023 and the 7th of January 2024."
+#|   - "Light (lux) measured by the Hobo device at the Seepark residency between the 23rd of October 2023 and the 7th of January 2024."
+# Custom theme for plots
+theme_first_imp_plt <- theme_classic() + 
+  theme(legend.position = "none", # remove legend
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Temperature plot
+ggplot(data = data, aes(x = dttm, y = temp, color="grey")) +
+  geom_line() + 
+  scale_color_manual(values = "grey") +
+  scale_x_datetime(breaks = "2 day", date_labels = "%e %b %y") +
+  labs(x = "Datetime (every 10 minutes)", 
+       y = "Temperature (°C)") +
+  theme_first_imp_plt
+
+# Light plot
+ggplot(data = data, aes(x = dttm, y = lux, fill = "grey")) +
+  geom_line() +
+  scale_fill_manual(values = "grey") + 
+  scale_x_datetime(breaks = "2 day", date_labels = "%e %b %y") +
+  labs(x = "Datetime (every 10 minutes)", 
+       y = "Light (Lux)") +
+  theme_first_imp_plt
+```
+
+## 3.2. Quality control procedures (QCPs)
+
+In the following, four quality check procedures are applied for systematic flagging of "bad" data points.
+
+### 3.2.1. Measurement range (Plausible values)
+
+```{r}
+#| label: measure_range
+# Plausible measurement range
+data <- data %>%
+  mutate(q1 = temp < -20 | temp > 70 | lux < 0 | lux > 320000)
+```
+
+### 3.2.2. Plausible rate of change
+
+```{r}
+#| label: change_rate
+# Check change to previous temperature
+current <- data$temp[2:length(data$temp)]
+previous <- data$temp[1:length(data$temp)-1]
+change_rate <- current - previous
+change_rate <- c(0, change_rate) # Add zero in front because no previous
+
+# Flag for (im)plausible rate of change (>1 K)
+data <- data %>% 
+  mutate(q2 = abs(change_rate) > 1) # Flag too much variation
+```
+
+### 3.2.3. Minimum variability (Persistence)
+
+```{r}
+#| label: persistence
+# Minimum variability (Persistence)
+data <- data %>%
+  mutate(q3 = 
+           rollapply( # Flag too little variation
+             temp,
+             width = 6, # Within one hour
+             # Check if max. temp. difference within 1 hour is below 0.1 K
+             FUN = function(x) (max(x) - min(x)) <= 0.1,
+             align = "right", 
+             fill = NA
+             )
+         )
+```
+
+### 3.2.4. Light intensity
+
+First, the observations are categorized by sky illuminance classes (SIC).
+
+```{r}
+#| label: tbl-light
+#| tbl-cap: "Number of observations in different sky illuminance classes (SIC). The classes: overcast (light), clear sky (shade), sunshine and sunshine (bright) are not represented, as no observation falls into these classes (i.e., all light measurements are below 2000 Lux)."
+# Categorize Lux
+data <- data %>% 
+  mutate(SIC = case_when( # Categorize Lux
+    between(lux, 0, 10 - 1) ~ "night",
+    between(lux, 10, 500 - 1) ~ "sunrise_sunset",
+    between(lux, 500, 2000 - 1) ~ "overcast_full",
+    between(lux, 2000, 15000 - 1) ~ "overcast_light",
+    between(lux, 15000, 20000 - 1) ~ "clear_sky_shade",
+    between(lux, 20000, 50000 - 1) ~ "sunshine",
+    lux >= 50000 ~ "sunshine_bright",
+    TRUE ~ NA_character_
+  ))
+
+# Print table (alter column names)
+knitr::kable(data %>% count(SIC),
+             "pipe",
+             col.names = c("SIC", "No. observations"))
+```
+
+Then, observations are flagged according to theses SICs.
+
+```{r}
+# Flag sunshine
+data <- data %>%
+  mutate(is_sun = if_else(SIC == "sunshine", 1, 0)) %>% # Flag sunshine
+  # Set flag to NA if it is not within daytime
+  mutate(is_sun = if_else(hour(dttm) > 5 & hour(dttm) < 18, is_sun, NA)) %>%
+  mutate(q4_1 = rollapply(is_sun, # Flag i, i+1 and i-1 if there is sun
+                           width = 3, 
+                           FUN = function(x) sum(x) > 0,
+                           align = "center", 
+                           partial = TRUE)) %>% 
+  select(-is_sun)
+
+# Flag sunshine bright
+data <- data %>%
+  # Flag sunshine (bright)
+  mutate(is_sun = if_else(SIC == "sunshine_bright", 1, 0)) %>%
+  # Set flag to NA if it is not within daytime
+  mutate(is_sun = if_else(hour(dttm) >= 6 & hour(dttm) < 18, is_sun, NA)) %>%
+  mutate(q4_2 = rollapply(is_sun, # Flag 7 surrounding values if bright sun
+                           width = 7,
+                           FUN = function(x) sum(x) > 0,
+                           align = "center", 
+                           partial = TRUE)) %>% 
+  select(-is_sun, -SIC)
+```
+
+## 3.3. Summarize
+
+All light and temperature measurements fall within a plausible value range (QCP1, @tbl-summarize (a)). No influence of sunlight was detected (QCP4, @tbl-summarize (a); @tbl-light). Four observations exhibit a rate of change greater than 1 K, occurring in December 2023 during morning or night, with rates staying below 2 K. Three cases show a temperature increase slightly beyond 1 K, while the fourth records a decline of about 1.7 K (see @tbl-summarize (b)).
+
+```{r}
+#| label: tbl-summarize
+#| tbl-cap: |
+#|   Overview of the quality checks of the Hobo device time series.
+#| tbl-subcap: 
+#|   - "Number of observations that failed the quality checks (QCP1, QCP2, QCP3, QCP4_1 or QCP4_2)."
+#|   - "Observations flagged for QC2 failure due to a temperature rate of change within 10 minutes exceeding 1 K."
+#| layout-ncol: 2
+# Summarize QC checks
+qc_df <- data %>% 
+  rowwise() %>%
+  mutate(qc_all = any(c(q1, q2, q3, q4_1, q4_2), na.rm = TRUE), # Any fail?
+         qc_tot = sum(c(q1, q2, q3, q4_1, q4_2), na.rm = TRUE)) # Total fails
+# Make table to show number of fails per quality check
+summary_qc <- data.frame(
+  Check = c("QCP1", "QCP2", "QCP3", "QCP4_1", "QCP4_2"),
+  Sum = c(sum(qc_df$q1, na.rm = TRUE),
+          sum(qc_df$q2, na.rm = TRUE),
+          sum(qc_df$q3, na.rm = TRUE),
+          sum(qc_df$q4_1, na.rm = TRUE),
+          sum(qc_df$q4_2, na.rm = TRUE))
+)
+
+# Table for no. QCP fails
+knitr::kable(summary_qc, 
+             "pipe", 
+             col.names = c("Quality Check Procedure (QCP)", "No. observations"))
+
+# QC2 details of flagged observations
+data %>% 
+    mutate(change = change_rate) %>% 
+    filter(abs(change) > 1) %>% 
+    select(dttm, change) %>% 
+knitr::kable(.,
+             "pipe",
+             col.names = c("Datetime", "Relative change to previous (K)"))
+```
+
+These rate changes do not necessarily indicate observation quality issues for QCP2: (1) the changes are still relatively small, and (2) for instance, the flagged measurements fit well with the rest of the temperature curve on December 31 between 8 A.M. and 2 P.M. (see @fig-q2-fail).
+
+```{r}
+#| label: fig-q2-fail
+#| fig-cap: "Temperature measurements of the Hobo at Seepark from 8 A.M. until 2 P.M. on the 31st of December 2023. Rates of changes greater than 1 K (QCP2) do not appear to be outliers."
+# Plot times series section, where QCP2 failed
+start <- as.POSIXct("2023-12-31 08:00:00")
+end <- as.POSIXct("2023-12-31 12:00:00")
+period <- start %--% end # Overall period for plotting
+
+data %>% 
+  # Filter time period of interest
+  filter(floor_date(dttm, unit="hour") %within% period) %>% 
+  # Plot temperatures
+  ggplot(data = ., aes(x = dttm, y = temp, color="grey")) +
+    # Highlight where QCP2 failed
+    geom_rect(aes(xmin = as.POSIXct("2023-12-31 08:50:00"), 
+                  xmax = as.POSIXct("2023-12-31 09:00:00"), 
+                  ymin = -Inf, 
+                  ymax = Inf,
+                  fill = "Rate of change >1 K (QC2)",
+                  alpha = "alpha1"),
+              inherit.aes = FALSE) +
+    geom_rect(aes(xmin = as.POSIXct("2023-12-31 11:30:00"), 
+                  xmax = as.POSIXct("2023-12-31 11:40:00"), 
+                  ymin = -Inf, 
+                  ymax = Inf), 
+              fill = "coral", 
+              alpha = 0.01, 
+              inherit.aes = FALSE) +
+    geom_line() + 
+    scale_color_manual(values = "grey", guide = "none") +
+    scale_fill_manual(
+      values = c("Rate of change >1 K (QC2)" = adjustcolor("coral", 
+                                                           alpha.f = 0.5))
+      ) + # Transparent color for highlighting QCP2 flagged obs.
+    scale_alpha_manual(values = c("alpha1" = 0.01), 
+                       guide = "none") + # Add transparency
+    scale_x_datetime(breaks = "10 mins", 
+                     date_labels = "%H:%M") +
+    labs(x = "Datetime (every 10 minutes)", 
+         y = "Temperature (°C)") +
+    theme_minimal() + 
+    theme(legend.position = "top",
+          legend.title = element_blank(),
+          axis.text.x = element_text(angle = 45, hjust = 1),
+          panel.grid.minor = element_blank())
+```
+
+2723 measurements fail QCP3, implying an unreasonably low temperature change within one hour \<1 K). Thus, the QCP3 flags the most measurements and 25 % of the observations fail the persistence test, although most of the flagged values are only slightly below the threshold (see @fig-q3-threshold). Adjusting it to 0.095 K (see @adjust-threshold) only 670 observations, that is about 6 % of all measurements, fail the persistence test (see @tbl-new-summarize). Of note, the temperature change is always greater than 0 K within one hour.
+
+```{r warning = FALSE}
+#| label: fig-q3-threshold
+#| fig-cap: "Maximum temperature change within one hour across all Hobo observations sorted in ascending order."
+# View threshold for persistence test 
+data %>% 
+    mutate(
+        var = rollapply( # Get max. variation within one hour
+            temp,
+            width = 6, # One hour windows 6 x 10 min.
+            FUN = function(x) max(x) - min(x), # Max. variation
+            align = "right", 
+            fill = NA
+        ),
+        dttm = format(dttm)
+    ) %>%
+    arrange(across(var)) %>% # Sort the dataframe by the 'var' column
+    ggplot(., aes(x = 1:length(var), y = var)) + 
+        geom_line(color = "grey", group = 1) +
+        geom_hline(yintercept = 0.1, 
+                   linetype = "dashed", 
+                   color = "coral") + # Line for threshold
+        annotate("text", 
+                 x = 0, 
+                 y = 0.2, 
+                 label = "0.1", 
+                 color = "coral", 
+                 hjust = 1) + # Threshold annotation
+        labs(x = "Measurements sorted by y-values", 
+             y = "Max. Temperature change within one hour (K)") +
+        theme_minimal()
+```
+
+```{r}
+#| label: adjust-threshold
+# Adjust persistence test threshold to 0.095
+data <- data %>%
+  mutate(q3 = 
+           rollapply( # flag too little variation
+             temp,
+             width = 6,
+             # check if max. temp. difference within an hour is not above 0.095K
+             FUN = function(x) (max(x) - min(x)) <= 0.095,
+             align = "right", 
+             fill = NA
+             )
+         )
+```
+
+```{r}
+#| label: tbl-new-summarize
+#| tbl-cap: "Number of observations that failed the quality checks (QCP1, QCP2, QCP3, QCP4_1 or QCP4_2) after adjusting threshold of the persistence test (QCP3) from 0.01K to 0,095K."
+# Summarize once again QC checks
+qc_df <- data %>% 
+  rowwise() %>%
+  mutate(qc_all = any(c(q1, q2, q3, q4_1, q4_2), na.rm = TRUE),
+         qc_tot = sum(c(q1, q2, q3, q4_1, q4_2), na.rm = TRUE))
+# Make table to show number of fails per quality check
+knitr::kable(
+  data.frame(
+    Sum = c(sum(qc_df$q1, na.rm = TRUE),
+          sum(qc_df$q2, na.rm = TRUE),
+          sum(qc_df$q3, na.rm = TRUE),
+          sum(qc_df$q4_1, na.rm = TRUE),
+          sum(qc_df$q4_2, na.rm = TRUE)),
+    Check = c("QCP1", "QCP2", "QCP3", "QCP4_1", "QCP4_2")
+    ), 
+  "pipe", 
+  col.names = c("Quality Check Procedure (QCP)", "No. observations"))
+```
+
+Regarding daily patterns, most QC3 flags occur at midnight, with the fewest flagged measurements around midday (11 A.M. to 1 P.M.) (see @fig-qc3). Generally, a trend emerges showing reduced temperature variations during the night, likely due to more stable atmospheric conditions. Around midday, solar radiation peaks, causing temperature increases, while weather conditions contribute to increased variation as well (e.g., a cloudy sky).
+
+```{r}
+#| label: fig-qc3
+#| fig-cap: "The number of persistence test failures (QCP3) across all days of the time series. Fewer measurements are flagged around midday."
+# Investigate QCP3 daily pattern
+qc_df %>% 
+  filter(q3) %>%
+  mutate(hour = hour(dttm)) %>% # Add column with hours
+  group_by(hour) %>% # Group 10-minutes data by hour across days
+  summarise(q3_sum = sum(q3, na.rm = TRUE)) %>% # Count QC3 flags per hour across days
+  ungroup() %>% 
+  # Barplot of the no. WC3 flags per hour
+  ggplot(., aes(x = sprintf("%02d:00", hour), y = q3_sum)) +
+  geom_bar(stat = "identity", position = "dodge") + 
+  labs(x = "Time (in hours)", 
+       y = "No. QC3 flags per hour across days") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), 
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank())
+```
+
+## 3.4. Aggregate
+
+After aggregation, the time series has 169 hourly data points that fail the QCP, i.e., more than two data points within one hour failed at least one QC in those cases. The now missing data points make up about 9% of the time series and are mainly driven by the failures of the persistence test (QC3). The failed hourly data points are scattered over the time series (see @fig-hourly (A)). No additional data points appear to be implausible, given @fig-hourly (A). Generally, the temperatures decrease towards winter, there seem to be reasonable fluctuations and no extreme outliers or temperature changes can be found.
+
+Furthermore, there is no clear pattern of failed data points across days (see @fig-hourly (C)). On average, eight hourly observations failed per day. As observed previously, fewer data points fail the QCP during midday (see @fig-hourly (D)), as here, QC3 fails less frequently due to more temperature variations at that time of the day. 16 to 26 data points failed the QCP per hour (summed across days).
+
+```{r}
+# Make hourly data
+hourly_data <- qc_df %>%
+  mutate(dttm = floor_date(dttm, unit='hour')) %>%
+  group_by(dttm) %>% # Group data by hour
+  summarise(avg_temp = mean(temp, 
+                            na.rm = TRUE), # Calculate hourly mean temp.
+            avg_lux = mean(lux, 
+                           na.rm = TRUE), # Calculate hourly mean illuminance
+            qc_all = sum(qc_all, 
+                         na.rm = TRUE)) %>%  # Count failed QC per hour
+  ungroup() %>% 
+  # Remove hourly data, when more than 1 QCPs failed per hour
+  mutate(avg_temp = ifelse(qc_all > 1, 
+                           NA, 
+                           avg_temp), # Set temp. to NA if more than 1 failed
+         avg_lux = ifelse(qc_all > 1, 
+                          NA, 
+                          avg_lux)) # Same for illuminance
+```
+
+```{r}
+#| label: fig-hourly
+#| out-width: 120%
+#| fig-cap: |
+#|   (A) Hourly average temperature time series with gaps, where data points failed the QCP (about 9% of hourly data points).
+#|   (B) Overall number of hourly data points that failed the QCP.
+#|   (C) Number of hourly data points that failed the QCP per day.
+#|   (D) Number of data points that failed the QCP per hour summed across days.
+theme_bar <- theme_classic2() +
+  theme(axis.text.x = element_text(angle = 55, hjust = 1, size = 7),
+        axis.title = element_text(size = 11),
+        legend.position = "none")
+
+# Plot time series showing missing data
+ts_fails_ts <- ggplot(data = hourly_data, aes(x = dttm, y = avg_temp)) +
+    geom_line(color = "grey") +
+    labs(x = "Datetime (hourly)", 
+         y = "Mean hourly\nTemperature (°C)") +
+    theme_classic2() + 
+    theme(axis.title = element_text(size = 11))
+
+# Plot number of failed hourlt data points
+count_fails_plt <- hourly_data %>%
+  # Create a new column indicating whether qc_all is "Passed" or "Failed"
+  mutate(qc_status = ifelse(qc_all <= 1, 
+                            "Passed", 
+                            "Failed")) %>%
+ggplot(., aes(x = qc_status, fill = qc_status)) +
+  geom_bar() + # Create the bar plot
+  geom_text(stat = "count", 
+            aes(label = after_stat(count)), 
+            size = 3, 
+            vjust = -0.5) +  # Annotate count values
+  scale_fill_manual(values = c("coral", "darkolivegreen3")) +
+  coord_cartesian(ylim = c(0, 1800)) + # Avoid cut off annotation
+  labs(x = NULL, y = "No. hourly data points") +
+  theme_classic2() +
+  theme(axis.title = element_text(size = 11),
+        legend.position = "none")
+
+# QC fails across hours
+hourly_fails_plt <- hourly_data %>% 
+  mutate(hour = hour(dttm)) %>% 
+  group_by(hour) %>% 
+  summarise(count_nas = sum(is.na(avg_temp))) %>% 
+  ungroup() %>% 
+  ggplot(., aes(x = sprintf("%02d:00", hour), y = count_nas)) +
+    geom_bar(stat = "identity", position = "dodge") + 
+    labs(x = "Time (in hours)", 
+         y = "No. hourly\nQCP fails") +
+  theme_bar
+
+# QC fails per day
+daily_fails_plt <- hourly_data %>% 
+  mutate(day = floor_date(dttm, unit = "day")) %>% 
+  group_by(day) %>% 
+  summarise(count_nas = sum(is.na(avg_temp))) %>% 
+  ungroup() %>% 
+  ggplot(., aes(x = day, y = count_nas)) +
+    geom_bar(stat = "identity", position = "dodge") + 
+    labs(x = "Date", 
+         y = "No. daily\nQCP fails") +
+    scale_x_datetime(breaks = "4 day", date_labels = "%e %b") +
+    theme_bar +
+    guides(fill = "none")
+
+# Putting all plots together
+ggarrange(ggarrange(ts_fails_ts, 
+                    count_fails_plt, 
+                    ncol = 2, # first row with ts and bar plot
+                    labels = c("A", "B"),
+                    widths = c(3, 1)
+                    ),
+          ggarrange(daily_fails_plt, 
+                    hourly_fails_plt, 
+                    ncol = 2, # second row with bar plots
+                    labels = c("C", "D")
+                    ),
+          nrow = 2)
+```
+
+Finally, the table with the correctly formatted the hourly data set is created.
+
+```{r}
+# Final hourly dataframe
+hobo_hourly <- data.frame(
+  date_time = hourly_data$dttm,
+  th = round(hourly_data$avg_temp, 4) # round to 4 digits
+)
+```
+
+# 4. Fill-up with reference station
+
+## 4.1. Reference station
+
+In the following, a reference weather station is selected. First, given four stations in Freiburg the two closest will be kept. Second, the temporal consistency of the two candidates with the Hobo measurements will be evaluated.
+
+```{r}
+#| label: load_dwd
+# Load Freiburg airport station data
+freiburg <- read_delim(
+  file.path("data", 
+            "input", 
+            "01443_freiburg", 
+            "produkt_tu_stunde_20220823_20240223_01443.txt"),
+  col_types = cols(MESS_DATUM = col_datetime("%Y%m%d%H")),
+  col_select = c("MESS_DATUM", "TT_TU"),
+  delim = ";") %>% 
+  mutate(TT_TU = str_replace_all(TT_TU, "\\s+", ""), # Remove blank spaces
+         TT_TU = as.double(TT_TU)) %>% # And convert to double
+  rename("date_time" = "MESS_DATUM", "dwd_airport" = "TT_TU")  %>% # adapt names
+  # Convert from UTC to UTC+1 timezone
+  mutate(date_time = with_tz(date_time, "Etc/GMT-1") - 60 * 60) %>% 
+  filter(dwd_airport >= -20 & dwd_airport <= 70) # ensure plausible temp. range
+
+# Load urban city center station's data
+freiburg_mitte <- read_delim(
+  file.path("data", 
+            "input", 
+            "13667_freiburg", 
+            "produkt_air_temperature_13667_akt.txt"),
+  col_types = cols(MESS_DATUM = col_datetime("%Y%m%d%H")),
+  col_select = c("MESS_DATUM", "LUFTTEMPERATUR"),
+  delim = ";") %>% 
+  rename("date_time" = "MESS_DATUM", "dwd_urban" = "LUFTTEMPERATUR") %>%
+  # Convert from UTC to UTC+1 timezone
+  mutate(date_time = with_tz(date_time, "Etc/GMT-1") - 60 * 60) %>% 
+  filter(dwd_urban >= -20 & dwd_urban <= 70) # ensure plausible temp. range
+
+# Merge reference and hobo data
+reference_data <- hobo_hourly %>% 
+  # Merge reference station data and only keep hobo measurement period
+  left_join(., freiburg, by = "date_time") %>% 
+  left_join(., freiburg_mitte, by = "date_time") %>% 
+  rename("my_hobo" = "th") # indicate hobo temp. column
+  
+# Convert to long df
+reference_long <- reference_data %>% 
+  pivot_longer(cols = -c(date_time), # use all, but not 'date_time'
+               names_to = "station",
+               values_to = "temp")
+```
+
+The measured temperatures of both stations align well with the Hobo time series (see @fig-choose-ref). During overall temperature drops, lower temperatures were recorded at the airport station compared to urban and Hobo measurements, e.g., around the 9th of November 2023 (see @fig-choose-ref).
+
+```{r}
+#| label: fig-choose-ref
+#| layout-nrow: 2
+#| fig-cap: "Comparison of temperature time series of the Hobo station at Seepark with measurements from the urban and airport stations in Freiburg."
+#| fig-subcap: 
+#|   - "Hourly temperature measurements of Hobo, urban and airport temperature of the entire time series."
+#|   - "Exemplifying 4-day section (8th untill 11th of Novemeber 2023) of the Hobo, urban and airport temperature time series in Freiburg."
+theme_ts <- theme_minimal() + 
+            theme(legend.position = c(0.85,0.20),
+                  legend.title = element_blank(),
+                  panel.grid.minor = element_blank())
+theme_ts_grid <- theme_minimal() + 
+                 theme(legend.position = c(0.85,0.20),
+                       legend.title = element_blank())
+
+# Entire ts of three stations
+ggplot(data = reference_long, aes(x = date_time, y = temp)) +
+    geom_line(aes(colour = station)) +
+    scale_x_datetime(breaks = "2 day", date_labels = "%e %b %y") + 
+    labs(x = "Datetime (hourly)", y = "Temperature (°C)") + 
+    theme_ts + 
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    
+
+# Section of time series for better visibility 
+period <- as.Date("2023-11-06") %--% as.Date("2023-11-11")
+reference_long %>% 
+    filter(date_time %within% period) %>% 
+    ggplot(data = ., aes(x = date_time, y = temp)) +
+        geom_line(aes(colour = station)) +
+        scale_x_datetime(breaks = "1 day", date_labels = "%e %b %y") + 
+        labs(x = "Datetime (hourly)", y = "Temperature (°C)") + 
+        theme_ts_grid 
+```
+
+The overall minimum temperature of the airport station is also about 3 °C cooler than the lowest temperature at the urban station and Seepark (see @tbl-choose-ref-stats). Further, the urban station shows a mean daily temperature amplitude closer to the Hobo measurements than the airport station (see @tbl-choose-ref-stats). This could indicate that the urban station is better suited as a reference station. However, the mean and maximum temperatures of the Hobo match slightly better with the airport station than with the urban station(see @tbl-choose-ref-stats).
+
+```{r}
+#| label: tbl-choose-ref-stats
+#| tbl-cap: "Summary statistics of the urban, airport and Hobo hourly temperature measurements (in °C) and the mean daily temperature amplitude (in K)."
+# Compute summary statistics for all stations
+stats <- reference_long %>% 
+  group_by(station) %>% 
+  summarize(mean = mean(temp, na.rm = TRUE),
+            min = min(temp, na.rm = TRUE),
+            max = max(temp, na.rm = TRUE)) %>% 
+  ungroup()
+
+# Compute the mean daily amplitude for all stations
+mean_daily_ampl <- reference_long %>%
+    mutate(date = floor_date(date_time, unit='day')) %>% # Get days
+    group_by(station, date) %>%
+    summarize(
+      daily_amplitude = max(temp) - min(temp)
+      ) %>% # Calculate daily amplitude
+    ungroup() %>% 
+    group_by(station) %>% 
+    summarize(mean_daily_amplitude = mean(daily_amplitude, na.rm = TRUE)) %>% 
+    ungroup()
+
+stats["mean_daily_amplitude"] = mean_daily_ampl$mean_daily_amplitude
+
+# Show table of summary statistics
+knitr::kable(stats, 
+             "pipe", 
+             digits = 2,
+             col.names = c("Station", 
+                           "AVG", 
+                           "MIN", 
+                           "MAX", 
+                           "Mean Daily Amplitude"))
+```
+
+Finally, regression models were fitted, predicting Hobo temperatures using the urban and airport stations as predictors. The urban model achieved an R-squared value of 0.96, outperforming the airport model's R-squared value of 0.92 (see @tbl-lm). This superior model fit aligns with earlier observations, indicating that the urban station is a more suitable reference, capturing the variance in the data more effectively. The overall analyses, including visualizations and statistical summaries, consistently support the urban station as the preferred reference. The airport station, with a more remote location does not align as well with the Hobo data, possibly due to the Hobo's urban placement among buildings that might be more similar to the environment of the urban station.
+
+```{r}
+#| label: tbl-lm
+#| tbl-cap: "R-squared values of two linear models predicting temperatures measured with the Hobos. One using temperatures from the urban station in Freiburg as predictor, the other temperatures from the airport station."
+# Linear regression models for reference stations
+urban_lm <- lm("my_hobo ~ dwd_urban", data = reference_data)
+airport_lm <- lm("my_hobo ~ dwd_airport", data = reference_data)
+
+# Extract the R-squared value
+r2_urban <- summary(urban_lm)$r.squared
+r2_airport <- summary(airport_lm)$r.squared
+
+# Display the result in table
+knitr::kable(data.frame(station = c("Urban", "Airport"),
+                        r2 = c(r2_urban, r2_airport)), 
+             "pipe", 
+             digits = 2,
+             col.names = c("Station", "R-squared"))
+```
+
+## 4.2. Fill-up
+
+Here, the previously fitted linear model that is based on the measurements of the urban station is used to predict the missing data in the Hobo time series with no gaps left.
+
+```{r}
+#| label: fill_up
+# Predict new values to fill up hobo gaps
+new_hobo <- predict(urban_lm, reference_data[is.na(reference_data$my_hobo),])
+# Fill up hobo data frame
+hobo_hourly[is.na(hobo_hourly$th), "th"] = new_hobo
+
+cat(any(is.na(hobo_hourly$th)))
+```
+
+Filled gaps in the time series appear to fit the remaining data well. Visually, no implausible data (i.e., extreme outliers or too little or too much variation) was produced by the linear model or is still present in the time series (see @fig-fill-up).
+
+```{r}
+#| label: fig-fill-up
+#| fig-cap: "Hobo time series with temperatures (in °C) measured near Seepark from the 23rd Oct. 2023 until the 7th Jan. 2024. Data points that failed quality checks were filled up with predictions from a linear regression model that uses DWD measurements from the city center of Freiburg as predictor."
+hobo_hourly <- hobo_hourly %>% 
+  mutate(isna = is.na(reference_data$my_hobo)) # Column for missing data points
+
+# Plot the time series highlighting filled up values
+ggplot(data = hobo_hourly, aes(x = date_time, y = th, color = isna)) +
+    geom_line(aes(group = 1)) +
+    scale_color_manual(values = c("TRUE" = "coral", "FALSE" = "grey"),
+                       labels = c("Observed", "Filled up")) + 
+    scale_x_datetime(breaks = "2 day", date_labels = "%e %b %y") +
+    labs(x = "Datetime (hourly)", y = "Temperature (°C)") +
+    theme_ts + 
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+However, the produced predictions result in an average daily temperature amplitude that is 1.25 °C lower than in the original Hobo measurements (see @tbl-stats-filled). The overall average temperature is about 0.03 °C warmer than in the original Hobo data set (see @tbl-stats-filled), but this slight difference in the mean is insignificant ($\text{P > } 0.05$).
+
+```{r}
+#| label: tbl-stats-filled
+#| tbl-cap: "Summary statistics of the urban, airport, original Hobo measurements and filled up Hobo temperature measurements (in °C), including the mean daily temperature amplitude (in K)."
+# Compute mean daily amplitude of data without gaps
+daily_ampl <- hobo_hourly %>% 
+  mutate(date = floor_date(date_time, unit='day')) %>% # Get days
+  group_by(date) %>%
+  summarize(daily_amplitude = max(th) - min(th)) %>% # Get daily amplitude
+  ungroup() %>%
+  summarize(mean_daily_amplitude = mean(daily_amplitude)) # Get avg. amplitude
+
+# Compute summary stats of filled up data and join with previous stats-table
+stats_with_filled <- hobo_hourly %>%
+  summarize(mean = mean(th),
+            min = min(th), 
+            max = max(th)) %>%
+  cross_join(., daily_ampl) %>%
+  mutate(station = "my_hobo_filled") %>%
+  full_join(stats, .)
+
+# Show table of summary statistics
+knitr::kable(stats_with_filled, 
+             "pipe", 
+             digits = 2,
+             col.names = c("Station", 
+                           "AVG", 
+                           "MIN", 
+                           "MAX", 
+                           "Mean Daily Amplitude"))
+```
+
+```{r}
+#| label: ttest
+# Perform t-test to see mean difference in Hobo measurements
+# With and without gaps
+ttest <- t.test(reference_data$my_hobo, hobo_hourly$th)
+cat("T-test, P-Value: ", round(ttest$p.value, 2))
+```
+
+## 4.3. Upload data
+
+Finally, the data set with filled up gaps is formatted and uploaded to Github.
+
+```{r}
+# Format table for upload
+hobo_hourly %>% 
+  mutate(date_time = format(date_time, "%Y.%m.%d %H"),
+         th = sprintf("%.4f", round(th, 4)), # 4 digits and trailing zeros
+         origin = if_else(isna, "R", "H")) %>%
+  rename("dttm" = "date_time") %>% 
+  select(-isna) %>% 
+  write_csv(., file.path("data", "output", "10350006_Th.csv"))
+```
+
+## 4.4 Advancing your model analysis
+
+The R-squared value used for the model evaluation provides information about the model fit. However, to better assess which model is best suited to fill the gaps in the hobo measurements, the root mean square error (RMSE) between the predictions and the observed data should also be considered. To get an idea of how the model performs on unseen data, a k-fold cross-validation with $k\text{ = 10}$ is performed. Thereby, the rows with gaps are not included. Due to the small sample size, an additional test data set is not set aside for a final evaluation in addition to the k-fold cross-validation. Rather, the average of the performance of the 10 resulting models on their validation dataset is used as metric.
+
+```{r}
+#| label: cv
+set.seed(420) # Seed for reproducability
+
+# Define cross-validation control k=10
+cv_control <- trainControl(method = "cv", 
+                           number = 10, 
+                           summaryFunction = defaultSummary)
+
+data_no_na <- na.omit(reference_data) # Remove NAs for CV
+
+# Perform k-fold cross-validation for urban_lm
+urban_fit <- train(my_hobo ~ dwd_urban, 
+                   data = data_no_na, 
+                   method = "lm", 
+                   trControl = cv_control)
+
+# Perform k-fold cross-validation for airport_lm
+airport_fit <- train(my_hobo ~ dwd_airport, 
+                     data = data_no_na, 
+                     method = "lm", 
+                     trControl = cv_control)
+
+# Extract and summarize results from the 10 folds (models)
+urban_results <- urban_fit$resample %>%
+  summarize(rmse_avg = mean(RMSE), 
+            rmse_sd = sd(RMSE),
+            r2_min = min(Rsquared), 
+            r2_max = max(Rsquared)) %>% 
+  mutate(model = "Urban") # Add model name
+airport_results <- airport_fit$resample %>%
+  summarize(rmse_avg = mean(RMSE), 
+            rmse_sd = sd(RMSE),
+            r2_min = min(Rsquared), 
+            r2_max = max(Rsquared)) %>% 
+  mutate(model = "Airport") # Add model name
+
+results <- bind_rows(urban_results, airport_results) %>% # Combine results
+  select(model, everything()) # Model name shall come first 
+```
+
+Following this procedure, the earlier choice of the urban model can be confirmed as its average RMSE is lower than that of the airport model (see @tbl-cv). The standard deviation of the RMSE across folds is also relatively small and lower for the urban model, indicating a slightly more consistent prediction performance across folds (see @tbl-cv). In addition, the fit of the models for the different training datasets is reasonable with an R-squared value between 0.90 and 0.96 (see @tbl-cv).
+
+```{r}
+#| label: tbl-cv
+#| tbl-cap: "Results of the 10-fold cross validation of the urban and airport model (i.e., a linear model with the hourly Hobo temperatures as response and urban or airport temperatures as predictor). It contains the mean (AVG RMSE) and standard deviation of the root mean squared errors (RMSEs) across the 10 folds (in K) and the minimum (MIN R-squared) and maximum (MAX R-squared) value across folds."
+# Display results table of CV
+knitr::kable(results,
+             "pipe", 
+             digits = 2,
+             col.names = c("Model", 
+                           "AVG RMSE", 
+                           "SD RMSE", 
+                           "MIN R-squared",
+                           "MAX R-squared"))
+```
+
+# 5. Database fun {#database}
+
+## 5.1. Types of Databases
+
+DuckDB differs from PostgreSQL in several ways: it is not transactional, operates in-memory, can parse data without table creation, and an entire database is contained in one file.\
+DuckDB may be more suitable for environmental data analysis in specific tasks. "Suitable" here refers to a system's ability to efficiently handle specific tasks based on performance, complexity, and scalability. For instance, DuckDB may be preferable for quick data exploration tasks (e.g. looking at summary statistics) due to its lightweight nature and efficiency in reading data. PostgreSQL's / PostGIS's advanced spatial capabilities make it preferable for large-scale projects requiring sophisticated geospatial analyses. PostgreSQL's/PostGIS's robustness and scalability, makes it more suitable for complex environmental modeling. Further, its Google Earth integration is useful, while DuckDBs integration with R or Python allow for statistical analyses.
+
+## 5.2 Counting stuff
+
+```{r}
+#| echo: false
+con = dbConnect(duckdb::duckdb(), 
+                dbdir = "data/output/hobo.duckdb", 
+                read_only = FALSE)
+```
+
+With only 16 sensors listed in the metadata file, 2024 was the year with the fewest sensors. However, there is an additional sensor in the data that is missing in the metadata file (see @tbl-count-sensors).
+
+```{sql}
+#| label: tbl-count-sensors
+#| tbl-cap: "The number of Hobo sensors for each measurement year in descending order."
+#| connection: con
+#| mode: markdown
+SELECT split_part(replace(filename, '\', '/'), -- Windows compatible
+                  '/', 
+                  -2) AS "Year", -- Extract year
+       COUNT(DISTINCT hobo_id) AS "No. Sensors"
+FROM read_csv('data/input/hobo/*/HOBO_Meta.csv',
+             auto_detect=True, 
+             filename=True, 
+             union_by_name=True, 
+             nullstr='NA')
+GROUP BY "Year"
+ORDER BY "No. Sensors" DESC;
+```
+
+## 5.3 Raw data is nice data {#loadraw}
+
+First, pre-processing steps ensure that all files contain a column for time stamps, temperatures and light measurements and are csv files (see the [pre-processing section](#prepro)). For the following, it is required that the folders *data/input/hobo* and *data/input/GIS* contain the pre-processed data from the Gihub repository.
+
+There are 288899 records in the raw data from 2024 including all Hobo sensors (see @tbl-raw-2024).
+
+```{sql}
+#| label: tbl-raw-2024
+#| tbl-cap: "Number of records (measurements every 10 minutes) from all sensors in 2024."
+#| connection: con
+-- Initialize table for raw hobo data from 2024
+CREATE OR REPLACE TABLE raw (
+    tstamp VARCHAR NOT NULL, -- not dealing with timestamps
+    temp DOUBLE, 
+    light DOUBLE,
+    year INTEGER, 
+    hobo_id INTEGER, 
+    PRIMARY KEY (tstamp, hobo_id, year) -- tstamp and hobo_id would also work
+);
+
+-- Populate table
+INSERT INTO raw
+SELECT column1 AS tstamp, 
+       column2 AS temp, 
+       CASE -- Replace string with NULL in light column
+           WHEN column3 = 'Logged' OR column3 = '' THEN NULL 
+           ELSE column3::DOUBLE -- Convert other values to DOUBLE
+       END AS light,
+       split_part(replace(filename, '\', '/'), -- For windows compatibility 
+                  '/', 
+                  4) AS year, -- Extract year (2024) from filepath
+       split_part(split_part(replace(filename, '\', '/'), '/', 6), 
+                  '.', 
+                  1) AS hobo_id -- Extract hobo id from filepath
+FROM read_csv("data/input/hobo/2024/raw/*.csv",
+              auto_detect=True, 
+              ignore_errors=True, 
+              filename=True, 
+              header=False, 
+              union_by_name=True,
+              nullstr='NA',
+              skip=2) -- Skip header 
+WHERE tstamp IS NOT NULL; -- Remove missing time stamps 
+
+-- Count records in 2024
+SELECT COUNT(*) AS "No. Records"
+FROM raw; 
+```
+
+## 5.4 All your raw data belong to us
+
+Here, all recorded measurements from 2017 until 2023 are inserted into the duckdb database (*data/output/hobo.duckdb*) in the table *raw* that already contains this year's data.
+
+```{r}
+#| label: init-raw
+#| output: false
+# Populate table with data from remaining years
+for (year in c("2017", "2018", "2020", "2021", "2022", "2023")) {
+  dbExecute(con,
+            paste("INSERT INTO raw
+              SELECT column1 AS tstamp,
+                     column2 AS temp, 
+                     column3 AS light,
+                     split_part(replace(filename, 
+                                        '\', 
+                                        '/'), -- For windows compatibility 
+                                '/', 
+                                4) AS year, -- Extract year from filepath
+                     split_part(split_part(replace(filename, '\', '/'), '/', 6),
+                                '.', 
+                                1) AS hobo_id -- Extract hobo id from filepath
+              FROM read_csv('data/input/hobo/", 
+              year, 
+              "/raw/*.csv', 
+              auto_detect=True,
+              ignore_errors=True, 
+              filename=True, 
+              header=False, 
+              union_by_name=True,
+              nullstr='NA',
+              skip=2)
+              WHERE tstamp IS NOT NULL;", 
+              sep=""))
+}
+
+# Another query for 2019, here the first 3 rows needed to be skipped 
+# plus union by name not possible
+dbExecute(con,
+          "INSERT INTO raw
+           SELECT column1 AS tstamp,
+                  column2 AS temp,
+                  column3 AS light,
+                  split_part(replace(filename, 
+                                     '\', 
+                                     '/'), -- For windows compatibility 
+                             '/', 
+                             4) AS year, -- Extract year (2024) from filepath
+                  split_part(split_part(replace(filename, '\', '/'), '/', 6),
+                             '.', 
+                             1) AS hobo_id -- Extract hobo id from filepath
+           FROM read_csv('data/input/hobo/2019/raw/*.csv',
+                         auto_detect=True,
+                         ignore_errors=True, 
+                         filename=True,
+                         header=False,
+                         nullstr='NA',
+                         skip=3);")
+```
+
+### CDF of temperature measurements
+
+Considering all Hobo temperature measurements from 2017 to 2024, the median is around 6 °C (at 0.5 on the y-axis), with about 99% of the observations below about 20 °C (at 0.99 on the y-axis) (see @fig-cdf (a)). The first quartile is about 2 °C (at 0.25 on the y-axis), and the third is around 9 °C (at 0.75 on the y-axis), indicating that half the data lies between 2 °C and 9 °C (see @fig-cdf (a)). Temperatures range from -15 °C to 43 °C and resemble a normal distribution. However, the top 1 % spans approximately 20 °C, while the bottom 1 % spans less than a 10 °C range. Additionally, the CDFs per year suggest a slight trend of higher temperatures in later years (see @fig-cdf (b)).
+
+```{r}
+#| label: fig-cdf
+#| fig-cap: "Cumulative distribution function (CDF) of all raw Hobo temperature measurements from 2017 until 2024."
+#| layout-nrow: 2
+#| fig-subcap: 
+#|   - "CDF of all observations across years (measured every 10 minutes)."
+#|   - "CDF of temperatures for each year."
+data <- dbGetQuery(con, "SELECT * FROM raw WHERE temp IS NOT NULL;") %>% 
+  filter(temp < 100) # Remove extremly high value that messes up plot
+
+# Plot overall CDF
+ggplot(data, aes(temp)) + 
+  stat_ecdf(geom = "point", color="grey") + 
+  labs(y="Cumulative Probability", x="Temperature (°C)") + 
+  scale_y_continuous(breaks=seq(0, 1, 0.1)) +
+  scale_x_continuous(breaks=seq(floor(min(data$temp)) - 2, 
+                                ceiling(max(data$temp)) + 2, 2)) +
+  theme_minimal() + 
+  theme(panel.grid.minor = element_blank())
+
+# Plot CDFs per year
+ggplot(data, aes(temp)) + 
+  stat_ecdf(geom = "step", aes(color=factor(year))) +  
+  labs(y="Cumulative Probability", x="Temperature (°C)") + 
+  scale_y_continuous(breaks=seq(0, 1, 0.1)) +
+  scale_x_continuous(breaks=seq(floor(min(data$temp)) - 2, 
+                                ceiling(max(data$temp)) + 2, 2)) +
+  viridis::scale_color_viridis(discrete = TRUE, name="") +
+  theme_minimal() +
+  theme(panel.grid.minor = element_blank(),
+        legend.position = c(0.85,0.5))
+```
+
+## 5.5 Temperature indices {#indices}
+
+```{sql}
+#| label: indices
+#| connection: con
+-- Calculate temperature indices for each Hobo (and year)
+CREATE OR REPLACE TABLE hobo_geo AS
+SELECT year, 
+       hobo_id, 
+       avg(temp) AS mean_temp, -- Mean temperature
+       variance(temp) AS var_temp, -- Temperature variance
+       avg(temp) -- Mean daytime temperature
+           FILTER (WHERE light > 10 AND light IS NOT NULL) AS day_temp,
+       avg(temp) -- Mean night temperature
+           FILTER (WHERE light < 10 AND light IS NOT NULL) AS night_temp,
+       quantile_disc(temp, 0.9) -- 90% percentile of daytime temperature
+           FILTER (WHERE light > 10 AND light IS NOT NULL) AS day_temp_90,
+       quantile_disc(temp, 0.1) -- 10% percentile of night temperature
+           FILTER (WHERE light < 10 AND light IS NOT NULL) AS night_temp_10
+FROM raw
+WHERE temp IS NOT NULL -- Remove gaps
+GROUP BY year, hobo_id
+ORDER BY year;
+```
+
+```{sql}
+#| connection: con
+#| label: tbl-indices
+#| tbl-cap: "Indices of temperature measurements for each Hobo device and measurement year. Indices include the average temperature, the temperature variance, the average daytime and nighttime temperature, as well as the 90% percentaile of daytime temepratures and the 10% percentile of night temperatures."
+-- Display table with indices
+SELECT year AS Year,
+       hobo_id AS "Hobo ID",
+       round(mean_temp, 4) AS	"AVG Temp.", 
+       round(var_temp, 4) AS "Temp. Variance",
+       round(day_temp, 4) AS "AVG Day Temp.",	
+       round(night_temp, 4) AS "AVG Night Temp.",
+       round(day_temp_90, 4) AS "90% Day Temp.", -- 90th percentile
+       round(night_temp_10, 4) AS "10% Night Temp." -- 10th percentile
+FROM hobo_geo; 
+```
+
+# 6. Ducks in space and time
+
+## 6.1 Exporting data
+
+Here, I create a new table that integrates proper spatial information into the index table from [section 5.5](#indices).
+
+```{sql}
+#| label: spatial-index
+#| connection: con
+-- Load spatial extension
+INSTALL spatial;
+LOAD spatial; 
+
+-- Load all meta information into table meta
+CREATE OR REPLACE TABLE meta AS
+SELECT hobo_id, 
+       longitude::DOUBLE AS longitude, 
+       latitude::DOUBLE AS latitude,
+       split_part(replace(filename, '\', '/'), '/', 4) as year
+FROM read_csv('data/input/hobo/*/HOBO_Meta.csv', 
+             auto_detect=True, 
+             filename=True, 
+             union_by_name=True, 
+             nullstr='NA');
+             
+-- Join meta table and hobo measurement table
+CREATE OR REPLACE TABLE hobo_geo AS
+SELECT h.*, 
+       m.longitude, 
+       m.latitude,
+       st_transform(st_point(m.longitude, m.latitude), 
+                    'epsg:4326', 
+                    'epsg:25832') AS geom -- Create geometry object
+FROM hobo_geo AS h
+LEFT JOIN meta AS m
+ON h.hobo_id = m.hobo_id AND h.year = m.year;
+```
+
+The resulting data was exported as a GeoJSON file (to *data/output/hobo_geo.geojson*). The file can be seamlessly opened in QGIS by simply dragging and dropping it into the software interface, without encountering any errors, warnings, or additional configuration steps. After dragging the file into QGIS a window pops up, where the only thing left to do is click the button "Add Layers" after the file was scanned successfully.
+
+```{sql}
+#| label: export
+#| connection: con
+-- Export data
+COPY (SELECT * 
+      FROM hobo_geo 
+      WHERE latitude IS NOT NULL AND longitude IS NOT NULL) -- Remove missing
+TO 'data/output/hobo_geo.geojson'
+WITH (FORMAT GDAL, DRIVER 'GeoJSON', LAYER_CREATION_OPTIONS 'WRITE_BBOX=YES');
+```
+
+## 6.2 Shp, GeoPackage, JSON, CSV, and now GeoJSON. WTF?!
+
+The *freiburg_leisure.geojson* file lists the parks in Freiburg (features) with properties and polygon / multipolygon geometries in JSON format.
+
+GeoJSON suits web apps and data visualization with small datasets, being easily parsed, integrated, and used in-memory. However, it performs poorly in QGIS and lacks efficiency for data storage compared to GeoPackage.
+
+## 6.3 Freiburg's parks are not as hot as you think
+
+The average temperature within a 100 m radius to a park in Freiburg is 6.4 °C (see @tbl-park-temp). Observations of Hobo stations more distant from parks are slightly cooler with 5.5 °C on average ($\text{P < }0.05$).
+
+```{sql}
+#| label: parks
+#| connection: con
+-- Load and transform park information from OSM geojson
+CREATE OR REPLACE TABLE leisure AS 
+WITH osm_utm AS ( -- Load OSM data of Freiburg's parks
+    -- Transform the data from WGS84 to UTM32N
+    SELECT id, name, st_transform(geom, 'epsg:4326', 'epsg:25832') AS geom 
+    FROM st_read('data/input/GIS/freiburg_leisure.geojson')
+),
+leisure AS (
+    SELECT id, name, geom, st_area(geom) AS area
+    FROM osm_utm 
+    ORDER BY area DESC
+)
+SELECT * FROM leisure;
+
+-- Join the closest leisure amenity to the hobo table
+CREATE OR REPLACE TABLE hobo_leisure AS
+SELECT h.*, -- Hobo data with ID and geometry of nearest park and Hobo distance 
+       leisure.geom AS leisure_geom, 
+       st_distance(h.geom, leisure.geom) AS distance
+FROM (SELECT *, -- Hobo data with ID of nearest leisure
+         (SELECT id 
+          FROM leisure 
+          ORDER BY st_distance(hobo_geo.geom, leisure.geom) ASC 
+          LIMIT 1) AS nearest_leisure_id
+      FROM hobo_geo) AS h
+JOIN leisure 
+ON leisure.id = h.nearest_leisure_id;
+
+-- Group obs. based on 100m radius from park
+CREATE OR REPLACE TABLE distance_groups_temps AS
+SELECT *,
+       CASE
+           WHEN distance > 100 THEN '> 100'
+           ELSE '<= 100'
+       END AS park_distance
+FROM hobo_leisure;
+```
+
+```{sql}
+#| tbl-cap: "Average temperature (°C) of Hobo measurements within and outside a 100 m radius from a park in Freiburg."
+#| label: tbl-park-temp
+#| connection: con
+-- Display table with mean temperatures in and outside 100m radius
+SELECT park_distance AS "Distance",
+       round(avg(mean_temp), 4) AS "AVG Temp."
+FROM distance_groups_temps
+GROUP BY park_distance;
+```
+
+```{r}
+#| label: park-temp-ttest
+#| connection: con
+# Load table with distances
+hobo_temp_groups <- dbGetQuery(con, "SELECT * FROM distance_groups_temps;")
+
+# Extract groups based on radius
+within_radius <- hobo_temp_groups %>% 
+  filter(park_distance == "<= 100") %>% 
+  select(mean_temp)
+outside_radius <- hobo_temp_groups %>% 
+  filter(park_distance == "> 100") %>% 
+  select(mean_temp)
+
+# T-test for temperatures in and ouside 100 m radius to park
+ttest <- t.test(within_radius, outside_radius)
+
+# Display P-Value
+cat("T-test, P-Value: ", round(ttest$p.value, 3))
+```
+
+### Groups separated by median distance
+
+The median distance of Hobo stations to parks in Freiburg is 238.7 m (see @tbl-park-temp-median). Measurements from within this median distance are on average about 0.7 °C cooler than those from more distant stations (($\text{P < }0.05$)).\
+Temperatures from within a 100 m radius compared to temperatures within a 238.7 m radius do not differ significantly. Neither do the temperatures outside the 100 m radius differ from those outside the median distance radius.
+
+```{sql}
+#| label: median-dist
+#| connection: con
+-- Groups based on median distance across all observations
+CREATE OR REPLACE TABLE median_distance_temps AS
+WITH distance AS(
+  SELECT median(distance) AS median
+  FROM hobo_leisure
+)
+SELECT *,
+       CASE
+           WHEN distance > (SELECT median FROM distance) THEN '> median'
+           ELSE '<= median'
+       END AS park_distance,
+       (SELECT median FROM distance) AS median_distance
+FROM hobo_leisure;
+```
+
+```{sql}
+#| tbl-cap: "Average temperature (°C) of Hobo measurements within and outside the median distance (m) radius from a park in Freiburg."
+#| label: tbl-park-temp-median
+#| connection: con
+-- Display table with mean temperatures in and outside 100m radius
+SELECT park_distance AS "Distance",
+       round(avg(mean_temp), 4) AS "AVG Temp.",
+       median_distance AS "Median Distance"
+FROM median_distance_temps
+GROUP BY park_distance, median_distance;
+```
+
+```{r}
+#| label: park-temp-median-ttest
+# Load table with distances
+hobo_temp_median_groups <- dbGetQuery(con, 
+                                      "SELECT * FROM median_distance_temps;")
+
+# Extract groups based on radius
+within_radius <- hobo_temp_median_groups %>% 
+  filter(park_distance == "<= median") %>% 
+  select(mean_temp)
+outside_radius <- hobo_temp_median_groups %>% 
+  filter(park_distance == "> median") %>% 
+  select(mean_temp)
+
+# T-test for temperatures in and ouside median radius to park
+ttest <- t.test(within_radius, outside_radius)
+
+# Display P-Value
+cat("T-test, P-Value: ", round(ttest$p.value, 3))
+```
+
+## 6.4 Final map
+
+Previous analyses suggest elevated temperatures near parks. I further hypothesize that temperatures are milder and exhibit less variability closer to Freiburg's city center.
+
+The map in @fig-map illustrates park locations and average temperatures from nearby Hobo stations (2017-2024). Here, no spatial trend emerges.
+
+```{r output = FALSE}
+#| label: map-data
+# Query all indices of Hobos within 100 m from a park
+hobo_data_parks <- dbGetQuery(con, 
+                              "SELECT *
+                               FROM hobo_leisure 
+                               WHERE mean_temp IS NOT NULL 
+                                     AND distance <= 100;") %>% 
+  filter(!is.na(latitude) & latitude < 49) %>% 
+  st_as_sf(coords=c("longitude", "latitude"), crs=4326)
+
+# Load park data and filter too small parks
+parks <- st_read("data/input/GIS/freiburg_leisure.geojson") %>% 
+  as_tibble(.) %>% 
+  inner_join(.,
+             dbGetQuery(con, "SELECT id, area FROM leisure;"), 
+             by = "id") %>% # Get area from leisure table with all park info
+  filter(area > 1000) # Exclude too small parks
+
+# Load Freiburg city districts 
+distr_path <- file.path("data",
+                        "input",
+                        "GIS", 
+                        "freiburg_districts_shp", 
+                        "stadtteile.shp")
+districts <- st_read(distr_path) %>% 
+  st_transform(., 
+               crs = st_crs(parks$geometry)) # Transform to same sys. as parks
+```
+
+```{r}
+#| label: fig-map
+#| fig-cap: "Map of parks in Freiburg including Hobo average yearly temperatures (°C) (2017 until 2024). Only Hobos within a 100 m radius to a park are shown."
+# Plot a map with parks and Hobo locations with avg. temperature
+ggplot() +
+  geom_sf(data = districts, fill = "white", color = "gray80") + # Add districts
+  geom_sf(data = st_as_sf(parks), 
+          aes(fill = "Park"), color = "darkolivegreen3") + # Add parks
+  geom_sf(data = st_as_sf(hobo_data_parks), alpha = 0.5, 
+          aes(color = mean_temp)) + # Hobos (color by temperature)
+  scale_fill_manual(name = NULL, values = c("Park" = "darkolivegreen3")) +
+  scale_color_viridis_c(name = "T in °C", 
+                      option = "rocket", 
+                      direction = -1, # Light color for low temp.
+                      breaks = seq(floor(min(hobo_data_parks$mean_temp)), 
+                                   ceiling(max(hobo_data_parks$mean_temp)), 
+                                   by = 1)) + # Adjust breaks
+  theme(legend.position = c(0.25, 0.175), # Simple map style
+        legend.box = "horizontal",
+        legend.background = element_blank(),
+        axis.title = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+```
+
+In 2024, there are consistent average temperatures (8-9°C) and similar variances (approximately 17-20 K) (see @fig-map-indices), while insufficient data limits the identification of spatial patterns. Compared to previous years, 2024 experiences warmer temperatures (see @fig-map-indices (a)), for instance compared to 2022 at Seepark. While temperatures appear slightly warmer towards the city center in 2022, the pattern is inconclusive across years (see @fig-map-indices (a)). Temperatures vary more in 2022 than in 2024, yet again no clear spatial pattern is present (see @fig-map-indices (b)). All in all, the previous hypothesis cannot be confirmed.
+
+Of note, 2023 is excluded in @fig-map-indices due to outlier variances (around 40 K), and 2017-2018 for comparison with quality-checked data in the [next section](#more).
+
+```{r}
+#| label: fig-map-indices
+#| fig-cap: |
+#|   Maps of parks in Freiburg including indices of Hobo measurements over years (2019 until 2024). 2023 is not included due to outlier temperature variances (around 40 K). Only Hobo measurements within a 100 m radius to a park are shown. 
+#| layout-nrow: 2
+#| fig-subcap: 
+#|   - "Map of yearly average temperature measurements (°C) of Hobo devices."
+#|   - "Map of yearly temperature variances (K) of Hobo measurements."
+# Basic map with districts and parks and overall settings
+base_map <- plot_ly(colors = rev(rocket(256)), type = "scatter") %>%
+    add_sf( # Add districts
+      data = districts %>% 
+        filter(name != "Kappel" & name != "Günterstal"),
+      fill = "gray90",
+      showlegend = FALSE,
+      hoveron = "fills", 
+      line = list(color = "grey", width = 0.5), # No border for polygons
+      name = ~name # Show district names
+      ) %>%
+    add_sf( # Add green park polygons
+      data = st_as_sf(parks),
+      fillcolor = "#A2CD5A",
+      showlegend = FALSE,
+      hoveron = "fills", 
+      line = list(color = "transparent"), # No border for polygons
+      name = ~name # Show park names
+      ) %>%
+    animation_opts( # Set animation options
+      transition = 0.001,
+      frame = 1000
+      )
+
+# Remove outlier year 2023 and 2017, 2018
+hobo_data_parks <- hobo_data_parks %>% 
+  filter(year != 2023 & year > 2018)
+
+temp_ticks <- round(seq(min(hobo_data_parks$mean_temp), 
+                        max(hobo_data_parks$mean_temp)))
+
+# Create plotly map with parks and yearly mean temperatures
+base_map %>%
+    add_sf( # Add Hobo with color coded mean temp.
+      data = hobo_data_parks,
+      color = ~mean_temp,
+      frame = ~year, 
+      text = ~paste(round(mean_temp, 2), "°C"),
+      hoverinfo = "text",
+      marker = list(size = 8),
+      mode = "markers",
+      name = "Hobo",
+      showlegend = TRUE
+      ) %>% 
+    colorbar(
+      ., # Add a colorbar
+      orientation = "v",
+      x = 0.1,  
+      y = 0.9,  
+      title = list(text = "T in °C", 
+                   side = "top", 
+                   font.size = 7),
+      tickvals = temp_ticks,
+      ticktext = temp_ticks,
+      thickness = 10
+      ) 
+
+# Create plotly map with parks and yearly temperature variances
+base_map %>% 
+    add_sf( # Add Hobo with color coded mean temp.
+      data = hobo_data_parks,
+      color = ~var_temp,
+      frame = ~year, 
+      text = ~paste(round(var_temp, 2), "K"),
+      hoverinfo = "text",
+      marker = list(size = 8),
+      mode = "markers",
+      name = "Hobo",
+      showlegend = TRUE
+      ) %>%
+    colorbar( # Add colorbar for variance
+      .,
+      orientation = "v",
+      x = 0.1,  
+      y = 0.9,  
+      title = list(text = "Variance in K", 
+                   side = "top", 
+                   font.size = 7),
+      thickness = 10
+      ) 
+```
+
+## 6.5 More data {#more}
+
+My SQL code chunks do not run without errors on the hourly quality checked data. Problems arise when trying to load the data. For instance, the SQL-query needs to be adapted, as the columns in the raw data files and the hourly data files differ, e.g., the date is in the second column in the raw data, while it is in the first column in the quality checked data. Furthermore, only one column needs to be skipped in the quality checked data, whereas two columns were skipped in the raw data files and so on. The query was adapted accordingly (see below). In addition, it was not possible to insert data from all years at once, similarly to the raw data insertion.
+
+```{r output = FALSE}
+#| label: load-qc-data
+# Create temporary table (temporary because of duplicates)
+dbExecute(con, 
+          "CREATE OR REPLACE TABLE qc_data_tmp (
+           tstamp VARCHAR NOT NULL, -- not dealing with timestamps
+           temp DOUBLE,
+           year INTEGER, 
+           hobo_id INTEGER);"
+          )
+# Insert each year separately as all at once did not laod all Hobos
+for (year in 2019:2024) {
+  dbExecute(con,
+            paste(
+            "INSERT INTO qc_data_tmp
+             SELECT column0 AS tstamp,
+                    column1 AS temp,
+                    split_part(replace(filename, '\', '/'), 
+                               '/', 
+                               4) AS year, -- Extract year from filepath
+                    split_part(split_part(replace(filename, '\', '/'), 
+                                          '/', 
+                                          6), 
+                                '_', 
+                                1) AS hobo_id -- Extract id
+              FROM read_csv('data/input/hobo/", 
+              year,
+              "/hourly/*_Th.csv',
+               auto_detect=True,
+               ignore_errors=True, 
+               filename=True,
+               header=False, 
+               skip=1)
+              WHERE tstamp IS NOT NULL;", 
+              sep="")
+            )
+}
+```
+
+Furthermore, the quality checked data has duplicates, so that year, Hobo ID and time stamp cannot be primary keys without an additional step to remove duplicates.
+
+```{sql}
+#| label: duplicates
+#| connection: con
+-- Create QC data table
+CREATE OR REPLACE TABLE qc_data (
+    tstamp VARCHAR, -- not dealing with timestamps for now
+    temp DOUBLE,
+    year INTEGER, 
+    hobo_id INTEGER, 
+    PRIMARY KEY (tstamp, hobo_id, year)
+);
+
+-- Insert data without duplicates 
+INSERT INTO qc_data
+WITH duplicates AS (
+    SELECT *,
+           -- Count occurence row with same of "primary key"        
+           ROW_NUMBER() OVER (PARTITION BY hobo_id, tstamp, year 
+                              ORDER BY hobo_id) AS n_row
+    FROM qc_data_tmp
+)
+SELECT tstamp, temp, year, hobo_id 
+FROM duplicates 
+WHERE n_row = 1; -- Remove duplicates
+```
+
+#### CDF of quality-checked temperature measurements
+
+The overall median temperature is about 6 °C, while the first quatile is at about 2 °C and the third quartile at about 10 °C (see @fig-cdf-qc). Overall temperatures are slightly warmer compared to the raw data, probably due to the missing year 2017, which was notably colder than the remaining years (see @fig-cdf (b)). Furthermore, the quality checked temperatures lie within a narrower range (about -12 °C to 27 °C).
+
+```{r}
+#| label: fig-cdf-qc
+#| fig-cap: "Cumulative distribution function (CDF) of quality checked Hobo temperature measurements from 2019 until 2024."
+#| layout-nrow: 2
+#| fig-subcap: 
+#|   - "CDF of hourly temperatures across years."
+#|   - "CDF of temperatures for each year."
+data <- dbGetQuery(con, "SELECT * FROM qc_data WHERE temp IS NOT NULL")
+
+ggplot(data, aes(temp)) + 
+  stat_ecdf(geom = "point", color="grey") + 
+  labs(y="Cumulative Probability", x="Temperature (°C)") + 
+  scale_y_continuous(breaks=seq(0, 1, 0.1)) +
+  scale_x_continuous(breaks=seq(floor(min(data$temp)) - 2, 
+                                ceiling(max(data$temp)) + 2, 2)) +
+  theme_minimal() + 
+  theme(panel.grid.minor = element_blank())
+
+ggplot(data, aes(temp)) + 
+  stat_ecdf(geom = "step", aes(color=factor(year))) +  
+  labs(y="Cumulative Probability", x="Temperature (°C)") + 
+  scale_y_continuous(breaks=seq(0, 1, 0.1)) +
+  scale_x_continuous(breaks=seq(floor(min(data$temp)) - 2, 
+                                ceiling(max(data$temp)) + 2, 2)) +
+  viridis::scale_color_viridis(discrete = TRUE, name="") +
+  theme_minimal() +
+  theme(panel.grid.minor = element_blank(),
+        legend.position = c(0.85,0.5))
+```
+
+#### Temperature indices and hot parks
+
+```{sql}
+#| label: hot-parks-qc
+#| connection: con
+-- Calculate temperature indices for each Hobo (and year)
+CREATE OR REPLACE TABLE hobo_geo_qc AS
+SELECT year, 
+       hobo_id, 
+       avg(temp) AS mean_temp, -- Mean temperature
+       variance(temp) AS var_temp, -- Temperature variance
+       avg(temp) -- Mean daytime temperature
+FROM qc_data
+WHERE temp IS NOT NULL -- Remove gaps
+GROUP BY year, hobo_id
+ORDER BY year;
+
+-- Join meta table and hobo measurement table
+CREATE OR REPLACE TABLE hobo_geo_qc AS
+SELECT h.*, m.longitude, m.latitude
+FROM hobo_geo_qc AS h
+LEFT JOIN meta AS m
+ON h.hobo_id = m.hobo_id AND h.year = m.year;
+
+-- Convert the hobo locations to a proper geometry object
+CREATE OR REPLACE TABLE hobo_geo_qc AS
+select *, st_transform(st_point(longitude, latitude), 
+                       'epsg:4326', 'epsg:25832') as geom 
+from hobo_geo_qc;
+
+-- Join the closest leisure amenity to the hobo table
+CREATE OR REPLACE TABLE hobo_leisure AS
+SELECT h.*, -- Hobo data with ID and geometry of nearest leisure and distance
+       leisure.geom AS leisure_geom, 
+       st_distance(h.geom, leisure.geom) AS distance
+FROM (SELECT *, -- Hobo data with ID of nearest leisure
+             (SELECT id 
+              FROM leisure 
+              ORDER BY st_distance(hqc.geom, leisure.geom) ASC 
+              LIMIT 1) AS nearest_leisure_id
+      FROM hobo_geo_qc AS hqc
+      WHERE geom IS NOT NULL) AS h
+JOIN leisure 
+ON leisure.id = h.nearest_leisure_id;
+
+-- Group obs. based on 100m radius from park
+CREATE OR REPLACE TABLE distance_groups_temps AS
+SELECT *,
+       CASE
+           WHEN distance > 100 THEN '> 100'
+           ELSE '<= 100'
+       END AS park_distance
+FROM hobo_leisure;
+
+-- Group obs. based on median distance radius from park
+CREATE OR REPLACE TABLE median_distance_temps AS
+WITH distance AS(
+  SELECT median(distance) AS median
+  FROM hobo_leisure
+)
+SELECT *,
+       CASE
+           WHEN distance > (SELECT median FROM distance) THEN '> median'
+           ELSE '<= median'
+       END AS park_distance,
+       (SELECT median FROM distance) AS median_distance
+FROM hobo_leisure;
+```
+
+The median distance of the Hobo stations to parks is 190 m, which is about 50 m shorter than the median distance of the stations in the raw data (see @tbl-hot-parks-qc). The latter, however, contain 2 additional measurement years, 2017 and 2018.
+
+```{sql}
+#| tbl-cap: "Average temperature (°C) of hourly quality checked data within and outside a 100 m (or median distance) radius from a park in Freiburg."
+#| label: tbl-hot-parks-qc
+#| connection: con
+SELECT park_distance AS "Distance",
+       round(avg(mean_temp), 4) AS "AVG Temp.",
+       NULL AS "Median Distance"
+FROM distance_groups_temps
+GROUP BY park_distance
+UNION
+SELECT park_distance AS "Distance",
+       round(avg(mean_temp), 4) AS "AVG Temp.",
+       median_distance AS "Median Distance"
+FROM median_distance_temps
+GROUP BY park_distance, median_distance;
+```
+
+Interestingly, there is neither a significant difference between the mean hourly temperatures inside and outside a 100 m radius in the quality-checked data, nor is there a significant difference when the groups are separated using the median distance (see below).
+
+```{r warning = FALSE}
+#| label: park-temp-qc-ttest
+# Load data from DB (with 100 m radius groups)
+hobo_temp_groups <- dbGetQuery(con, "SELECT * FROM distance_groups_temps;")
+
+# Extract groups based on radius
+within_radius <- hobo_temp_groups %>% 
+  filter(park_distance == "<= 100") %>% 
+  select(mean_temp)
+outside_radius <- hobo_temp_groups %>% 
+  filter(park_distance == "> 100") %>% 
+  select(mean_temp)
+
+# T-test for temperatures in and ouside 100 m radius to park
+ttest_100m <- t.test(within_radius, outside_radius)
+
+# Load median distance data
+hobo_temp_median_groups <- dbGetQuery(con, 
+                                      "SELECT * FROM median_distance_temps;")
+
+# Extract groups based on radius
+within_radius <- hobo_temp_median_groups %>% 
+  filter(park_distance == "<= median") %>% 
+  select(mean_temp)
+outside_radius <- hobo_temp_median_groups %>% 
+  filter(park_distance == "> median") %>% 
+  select(mean_temp)
+
+# T-test for temperatures in and ouside median radius to park
+ttest_median <- t.test(within_radius, outside_radius)
+
+# Display P-Values
+cat("T-test 100 m distance, P-Value: ", round(ttest_100m$p.value, 3), "\n")
+cat("T-test median distance, P-Value: ", round(ttest_median$p.value, 3))
+```
+
+#### The final map with QC data
+
+Similarly to the map based on the raw data (see @fig-map), no distinct spatial pattern can be observed (see @fig-map-qc).
+
+```{r}
+#| label: fig-map-qc
+#| fig-cap: "Map of parks in Freiburg including Hobo average yearly temperatures (°C) from quality-checked data (2019 until 2024). Only Hobos within a 100 m radius to a park are shown."
+# Query all indices of Hobos within 100 m from a park
+hobo_data_parks <- dbGetQuery(con, 
+                              "SELECT *
+                               FROM hobo_leisure 
+                               WHERE mean_temp IS NOT NULL 
+                                     AND distance <= 100;") %>% 
+  filter(!is.na(latitude) & latitude < 49) %>% 
+  st_as_sf(coords=c("longitude", "latitude"), crs=4326)
+
+# Plot a map with parks and Hobo locations with avg. temperature
+ggplot() +
+  geom_sf(data = districts, fill = "white", color = "gray80") + # Add districts
+  geom_sf(data = st_as_sf(parks), 
+          aes(fill = "Park"), color = "darkolivegreen3") + # Add parks
+  geom_sf(data = st_as_sf(hobo_data_parks), 
+          alpha = 0.7, 
+          aes(color = mean_temp)) + # Hobos (color by temperature)
+  scale_fill_manual(name = NULL, values = c("Park" = "darkolivegreen3")) +
+  scale_color_viridis_c(name = "T in °C", 
+                      option = "rocket", 
+                      direction = -1, # Light color for low temp.
+                      breaks = seq(floor(min(hobo_data_parks$mean_temp)), 
+                                   ceiling(max(hobo_data_parks$mean_temp)), 
+                                   by = 1)) + # Adjust breaks
+  theme(legend.position = c(0.25, 0.175), # Simple map style
+        legend.box = "horizontal",
+        legend.background = element_blank(),
+        axis.title = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+```
+
+In contrast to the raw data, the average temperature at the more remote Hobo station west of Dietenbachpark in 2024 is clearly cooler than at the Seepark stations (see @fig-map-indices-qc (a)). As in the raw data, the temperature variance between the three stations is very similar (see @fig-map-indices-qc (b)). A spatial trend towards warmer temperatures near the city center over the years is also not present and even seems to be less pronounced in 2022 than in the map based on the raw data (see @fig-map-indices (a)). However, the temperature variances towards the city center seem to be lower, with the exception of 2021, which shows the opposite pattern (see @fig-map-indices-qc (b)). Overall, the hypothesis of warmer temperatures near the city center can still not be confirmed, while temperatures seem to vary more towards the city center. More measurement locations would be desirable to confirm this emerging trend.
+
+Of note, some Hobo locations differ in the raw data versus the quality-checked data, e.g., in 2020.
+
+```{r}
+#| label: fig-map-indices-qc
+#| fig-cap: |
+#|   Maps of parks in Freiburg including indices of quality-checked data over years (2019-2024). 2023 is not included due to outlier temperature variances (around 40 K). Only Hobo stations within a 100 m radius to a park are shown. 
+#| layout-nrow: 2
+#| fig-subcap: 
+#|   - "Map of yearly average temperature measurements (°C) of the Hobo devices."
+#|   - "Map of yearly temperature variances (K) of Hobo measurements."
+# Remove outlier year 2023
+hobo_data_parks <- hobo_data_parks %>% 
+  filter(year != 2023)
+
+# Create plotly map with parks and yearly mean temperatures
+base_map %>%
+    add_sf( # Add Hobo with color coded mean temp.
+      data = hobo_data_parks,
+      color = ~mean_temp,
+      frame = ~year, 
+      text = ~paste(round(mean_temp, 2), "°C"),
+      hoverinfo = "text",
+      marker = list(size = 8),
+      mode = "markers",
+      name = "Hobo",
+      showlegend = TRUE
+      ) %>% 
+    colorbar(
+      ., # Add a colorbar
+      orientation = "v",
+      x = 0.1,  
+      y = 0.9,  
+      title = list(text = "T in °C", 
+                   side = "top", 
+                   font.size = 7),
+      thickness = 10
+      ) 
+
+# Create plotly map with parks and yearly temperature variances
+base_map %>% 
+    add_sf( # Add Hobo with color coded mean temp.
+      data = hobo_data_parks,
+      color = ~var_temp,
+      frame = ~year, 
+      text = ~paste(round(var_temp, 2), "K"),
+      hoverinfo = "text",
+      marker = list(size = 8),
+      mode = "markers",
+      name = "Hobo",
+      showlegend = TRUE
+      ) %>%
+    colorbar( # Add colorbar for variance
+      .,
+      orientation = "v",
+      x = 0.1,  
+      y = 0.9,  
+      title = list(text = "Variance in K", 
+                   side = "top", 
+                   font.size = 7),
+      thickness = 10
+      ) 
+```
+
+```{r include = FALSE}
+#| label: close
+dbDisconnect(con, shutdown = TRUE) # Close database
+```
